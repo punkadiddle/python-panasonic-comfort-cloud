@@ -50,7 +50,8 @@ def main():
 
     parser.add_argument(
         '-t', '--token',
-        help='File to store token in',
+        metavar='FILE',
+        help='File to store session cache in (default: %(default)s)',
         default='~/.pcomfortcloud-token.js')
 
     parser.add_argument(
@@ -62,7 +63,7 @@ def main():
     parser.add_argument(
         '-r', '--raw',
         help='Raw dump of response',
-        type=str2bool, nargs='?', const=True,
+        action='store_true',
         default=False)
 
     parser.add_argument(
@@ -193,14 +194,14 @@ def main():
         level = logging.WARN
     logging.basicConfig(level=level, format='--- [%(levelname)s] %(message)s')
 
-    session = pcomfortcloud.Session(args.username, args.password, args.token, args.raw, args.skipVerify == False,
+    session = pcomfortcloud.Session(args.username, args.password, args.token, args.raw, not args.skipVerify,
                                     caching=args.cache)
     session.login()
     try:
         if args.command == 'list':
             print("list of devices and its device id (1-x)")
             for idx, device in enumerate(session.get_devices()):
-                if(idx > 0):
+                if idx > 0:
                     print('')
 
                 print("device #{}".format(idx + 1))
@@ -213,7 +214,7 @@ def main():
             device = session.get_devices()[int(args.device) - 1]
             print("reading from device '{}' ({})".format(device['name'], device['id']))
 
-            print_result( session.get_device(device['id']) )
+            print_result(session.get_device(device['id']))
 
         if args.command == 'set':
             if int(args.device) <= 0 or int(args.device) > len(session.get_devices()):

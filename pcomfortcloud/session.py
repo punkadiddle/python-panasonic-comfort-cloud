@@ -15,17 +15,14 @@ from . import constants, urls
 
 class Error(Exception):
     ''' Panasonic session error '''
-    pass
 
 
 class RequestError(Error):
     ''' Wrapped requests.exceptions.RequestException '''
-    pass
 
 
 class LoginError(Error):
     ''' Login failed '''
-    pass
 
 
 class ResponseError(Error):
@@ -270,15 +267,15 @@ class Session(object):
             for group in self._cache.groups['groupList']:
                 for device in group['deviceIdList']:
                     if device:
-                        id = None
+                        deviceId = None
                         if 'deviceHashGuid' in device:
-                            id = device['deviceHashGuid']
+                            deviceId = device['deviceHashGuid']
                         else:
-                            id = hashlib.md5(device['deviceGuid'].encode('utf-8')).hexdigest()
+                            deviceId = hashlib.md5(device['deviceGuid'].encode('utf-8')).hexdigest()
 
-                        self._deviceIndexer[id] = device['deviceGuid']
+                        self._deviceIndexer[deviceId] = device['deviceGuid']
                         self._devices.append({
-                            'id': id,
+                            'id': deviceId,
                             'name': device['deviceName'],
                             'group': group['groupName'],
                             'model': device['deviceModuleNumber'] if 'deviceModuleNumber' in device else ''
@@ -286,8 +283,8 @@ class Session(object):
 
         return self._devices
 
-    def dump(self, id):
-        deviceGuid = self._deviceIndexer.get(id)
+    def dump(self, deviceId):
+        deviceGuid = self._deviceIndexer.get(deviceId)
 
         if(deviceGuid):
             response = self._request(urls.status(deviceGuid))
@@ -295,8 +292,8 @@ class Session(object):
 
         return None
 
-    def history(self, id, mode, date, tz="+01:00"):
-        deviceGuid = self._deviceIndexer.get(id)
+    def history(self, deviceId, mode, date, tz="+01:00"):
+        deviceGuid = self._deviceIndexer.get(deviceId)
 
         if(deviceGuid):
             try:
@@ -440,13 +437,13 @@ class Session(object):
                 print(response.text)
                 print("--- raw in ending    ---\n")
 
-            _json = json.loads(response.text)
+            json.loads(response.text)
 
             return True
 
         return False
 
-    def _read_parameters(self, parameters = {}):
+    def _read_parameters(self, parameters):
         value = {}
 
         _convert = {
