@@ -1,8 +1,10 @@
 import argparse
 import json
-import pcomfortcloud
+import logging
 
 from enum import Enum
+
+import pcomfortcloud
 
 def print_result(obj, indent = 0):
     for key in obj:
@@ -46,7 +48,7 @@ def main():
     parser.add_argument(
         '-t', '--token',
         help='File to store token in',
-        default='~/.pcomfortcloud-token')
+        default='~/.pcomfortcloud-token.js')
 
     parser.add_argument(
         '-s', '--skipVerify',
@@ -59,6 +61,20 @@ def main():
         help='Raw dump of response',
         type=str2bool, nargs='?', const=True,
         default=False)
+
+    parser.add_argument(
+        '-v', '--verbose', dest='verbosity',
+        help='Increase verbosity of debug output',
+        action='count',
+        default=0)
+
+    parser.add_argument(
+        '-c', '--cache',
+        help="Cached information is retrieved from the token file to speed up operation, (default: %(default)s)",
+        type=pcomfortcloud.constants.Cache,
+        choices=list(pcomfortcloud.constants.Cache),
+        default=pcomfortcloud.constants.Cache.Token
+    )
 
     commandparser = parser.add_subparsers(
         help='commands',
@@ -196,7 +212,16 @@ def main():
 
     args = parser.parse_args()
 
-    session = pcomfortcloud.Session(args.username, args.password, args.token, args.raw, args.skipVerify == False)
+    if args.verbosity > 1:
+        level = logging.DEBUG
+    elif args.verbosity > 0:
+        level = logging.INFO
+    else:
+        level = logging.WARN
+    logging.basicConfig(level=level, format='--- [%(levelname)s] %(message)s')
+
+    session = pcomfortcloud.Session(args.username, args.password, args.token, args.raw, args.skipVerify == False,
+                                    caching=args.cache)
     session.login()
     try:
         if args.command == 'list':

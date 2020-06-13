@@ -2,25 +2,21 @@
 Panasonic session, using Panasonic Comfort Cloud app api
 '''
 
-import json
-import requests
-import os
-import urllib3
 import hashlib
+import json
+import logging
+import os
 
-from . import urls
-from . import constants
+import requests
+import urllib3
 
-def _validate_response(response):
-    """ Verify that response is OK """
-    if response.status_code == 200:
-        return
-    raise ResponseError(response.status_code, response.text)
+from . import constants, urls
 
 
 class Error(Exception):
     ''' Panasonic session error '''
     pass
+
 
 class RequestError(Error):
     ''' Wrapped requests.exceptions.RequestException '''
@@ -30,6 +26,7 @@ class RequestError(Error):
 class LoginError(Error):
     ''' Login failed '''
     pass
+
 
 class ResponseError(Error):
     ''' Unexcpected response '''
@@ -43,6 +40,92 @@ class ResponseError(Error):
         self.text = json.loads(text)
 
 
+class Cache():
+    ''' Cloud Configuration Cache '''
+    _logger = logging.getLogger(__name__)
+
+    def __init__(self, caching=constants.Cache.Token, vid=None, groups=None):
+        self._dirty = False
+        self._caching = caching
+        self._groups = groups
+        self._vid = vid
+
+    def clear(self):
+        self._dirty = False
+        self._groups = None
+        self._vid = None
+
+    @property
+    def groups(self):
+        return self._groups
+
+    @groups.setter
+    def groups(self, value):
+        self._groups = value
+        self._dirty = True
+
+    @property
+    def vid(self):
+        return self._vid
+
+    @vid.setter
+    def vid(self, value):
+        if self._vid != value or value is None:
+            self._logger.debug("new vid differs from cached value, resetting cache")
+            self.clear()
+            self._vid = value
+            self._dirty = True
+
+    @property
+    def is_dirty(self):
+        return self._dirty
+
+    @property
+    def is_valid(self):
+        return self._vid is not None
+
+    def to_file(self, fileName):
+        """ Store cache values in given file """
+
+        dct = {}
+        if self._caching in [constants.Cache.Token, constants.Cache.All]:
+            dct['vid'] = self._vid
+        if self._caching in [constants.Cache.All]:
+            dct['groups'] = self._groups
+
+        if len(dct) > 0:
+            with open(fileName, 'w') as f:
+                json.dump(dct, f, indent=2, sort_keys=True)
+
+            self._logger.info("%s written to cache '%s'", dct.keys(), fileName)
+
+        self._dirty = False
+
+    def from_dict(self, dct):
+        self.clear()
+
+        if self._caching in [constants.Cache.Token, constants.Cache.All]:
+            self._vid = dct.get('vid', None)
+        if self._caching in [constants.Cache.All]:
+            self._groups = dct.get('groups', None)
+
+    def from_file(self, fileName):
+        """ Read cache values from given file a create a Cache object """
+
+        self.clear()
+
+        if os.path.exists(fileName):
+            self._logger.debug("attempting to read cache from '%s'", fileName)
+            try:
+                with open(fileName, 'r') as cookieFile:
+                    dct = json.load(cookieFile)
+                    self._logger.info("%s read from cache '%s'", dct.keys(), fileName)
+                    self.from_dict(dct)
+
+            except json.decoder.JSONDecodeError as ex:
+                self._logger.debug("invalid JSON in cache file: %s", ex.msg)
+
+
 class Session(object):
     """ Verisure app session
 
@@ -52,22 +135,22 @@ class Session(object):
 
     """
 
-    def __init__(self, username, password, tokenFileName='~/.panasonic-token', raw=False, verifySsl=True):
+    def __init__(self, username, password, tokenFileName='~/.panasonic-token.js', raw=False, verifySsl=True,
+                 caching=constants.Cache.Token):
         self._username = username
         self._password = password
         self._tokenFileName = os.path.expanduser(tokenFileName)
-        self._vid = None
-        self._groups = None
+        self._cache = Cache(caching)
         self._devices = None
         self._deviceIndexer = {}
         self._raw = raw
 
-        if verifySsl == False:
+        if verifySsl is False:
             urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
             self._verifySsl = verifySsl
         else:
             self._verifySsl = os.path.join(os.path.dirname(__file__),
-                    "certificatechain.pem")
+                                           "certificatechain.pem")
 
     def __enter__(self):
         self.login()
@@ -76,31 +159,22 @@ class Session(object):
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.logout()
 
-    def login(self):
+    def login(self, useCache=True):
         """ Login to verisure app api """
 
-        if os.path.exists(self._tokenFileName):
-            with open(self._tokenFileName, 'r') as cookieFile:
-                self._vid = cookieFile.read().strip()
+        if useCache:
+            self._read_token()
+        else:
+            self._cache.clear()
 
-            if self._raw: print("--- token found")
-
-            try:
-                self._get_groups()
-
-            except ResponseError:
-                if self._raw: print("--- token probably expired")
-
-                self._vid = None
-                self._devices = None
-                os.remove(self._tokenFileName)
-
-        if self._vid is None:
+        if not self._cache.is_valid:
             self._create_token()
-            with open(self._tokenFileName, 'w') as tokenFile:
-                tokenFile.write(self._vid)
 
+        if self._cache.groups is None:
             self._get_groups()
+
+        if self._cache.is_dirty:
+            self._cache.to_file(self._tokenFileName)
 
     def logout(self):
         """ Logout """
@@ -109,13 +183,46 @@ class Session(object):
         return {
             "X-APP-TYPE": "1",
             "X-APP-VERSION": "2.0.0",
-            "X-User-Authorization": self._vid,
+            "X-User-Authorization": self._cache.vid,
             "Accept": "application/json",
             "Content-Type": "application/json"
         }
 
+    def _request(self, url, method='get', payload=None, allowReauth=True, requestErrorClass=RequestError):
+        """ Send any REST request to the cloud api and return it's response.
+
+        Provide error handling and try to re-authenticate in case the X-Auth token expired.
+
+        Args:
+            url  (str): Id of the device
+            method (str): name of the http method to use
+            payload (str): payload, if any
+            allowReauth (bool): if re-authentication should be attempted
+            requestErrorClass (class): class to use for wrapping RequestExceptions
+
+        Return: response
+        """
+        try:
+            response = requests.request(method=method, url=url,
+                                        json=payload, headers=self._headers(),
+                                        verify=self._verifySsl)
+            if response.status_code == requests.codes.unauthorized and allowReauth:
+                # expired token response contains the following message: {'message': 'Token expires', 'code': 4100}
+                self.login(useCache=False)
+                response = requests.request(method=method, url=url,
+                                            json=payload, headers=self._headers(),
+                                            verify=self._verifySsl)
+
+        except requests.exceptions.RequestException as ex:
+            raise requestErrorClass(ex)
+
+        if response.status_code != requests.codes.ok:
+            raise ResponseError(response.status_code, response.text)
+
+        return response
+
     def _create_token(self):
-        response = None
+        """ Login and obtain X-Auth Token """
 
         payload = {
             "language": "0",
@@ -124,38 +231,25 @@ class Session(object):
         }
 
         if self._raw: print("--- creating token by authenticating")
+        self._cache.clear()
 
-        try:
-            response = requests.post(urls.login(), json=payload, headers=self._headers(), verify=self._verifySsl)
-            if 2 != response.status_code // 100:
-                raise ResponseError(response.status_code, response.text)
+        response = self._request(urls.login(), method='post', payload=payload, allowReauth=False,
+                                 requestErrorClass=LoginError)
 
-        except requests.exceptions.RequestException as ex:
-            raise LoginError(ex)
-
-        _validate_response(response)
-
-        if(self._raw is True):
+        if self._raw is True:
             print("--- raw beginning ---")
             print(response.text)
             print("--- raw ending    ---\n")
 
-        self._vid = json.loads(response.text)['uToken']
+        self._cache.vid = json.loads(response.text)['uToken']
+
+    def _read_token(self):
+        self._cache.from_file(self._tokenFileName)
 
     def _get_groups(self):
         """ Get information about groups """
-        response = None
 
-        try:
-            response = requests.get(urls.get_groups(),headers=self._headers(), verify=self._verifySsl)
-
-            if 2 != response.status_code // 100:
-                raise ResponseError(response.status_code, response.text)
-
-        except requests.exceptions.RequestException as ex:
-            raise RequestError(ex)
-
-        _validate_response(response)
+        response = self._request(urls.get_groups())
 
         if(self._raw is True):
             print("--- _get_groups()")
@@ -163,17 +257,17 @@ class Session(object):
             print(response.text)
             print("--- raw ending    ---\n")
 
-        self._groups = json.loads(response.text)
+        self._cache.groups = json.loads(response.text)
         self._devices = None
 
     def get_devices(self, group=None):
-        if self._vid is None:
+        if not self._cache.is_valid:
             self.login()
 
         if self._devices is None:
             self._devices = []
 
-            for group in self._groups['groupList']:
+            for group in self._cache.groups['groupList']:
                 for device in group['deviceIdList']:
                     if device:
                         id = None
@@ -196,18 +290,7 @@ class Session(object):
         deviceGuid = self._deviceIndexer.get(id)
 
         if(deviceGuid):
-            response = None
-
-            try:
-                response = requests.get(urls.status(deviceGuid), headers=self._headers(), verify=self._verifySsl)
-
-                if 2 != response.status_code // 100:
-                    raise ResponseError(response.status_code, response.text)
-
-            except requests.exceptions.RequestException as ex:
-                raise RequestError(ex)
-
-            _validate_response(response)
+            response = self._request(urls.status(deviceGuid))
             return json.loads(response.text)
 
         return None
@@ -216,8 +299,6 @@ class Session(object):
         deviceGuid = self._deviceIndexer.get(id)
 
         if(deviceGuid):
-            response = None
-
             try:
                 dataMode = constants.dataMode[mode].value
             except KeyError:
@@ -230,16 +311,7 @@ class Session(object):
                 "osTimezone": tz
             }
 
-            try:
-                response = requests.post(urls.history(), json=payload, headers=self._headers(), verify=self._verifySsl)
-
-                if 2 != response.status_code // 100:
-                    raise ResponseError(response.status_code, response.text)
-
-            except requests.exceptions.RequestException as ex:
-                raise RequestError(ex)
-
-            _validate_response(response)
+            response = self._request(urls.history(), method='post', payload=payload)
 
             if(self._raw is True):
                 print("--- history()")
@@ -259,25 +331,13 @@ class Session(object):
         deviceGuid = self._deviceIndexer.get(id)
 
         if(deviceGuid):
-            response = None
-
-            try:
-                response = requests.get(urls.status(deviceGuid), headers=self._headers(), verify=self._verifySsl)
-
-                if 2 != response.status_code // 100:
-                    raise ResponseError(response.status_code, response.text)
-
-            except requests.exceptions.RequestException as ex:
-                raise RequestError(ex)
-
-            _validate_response(response)
+            response = self._request(urls.status(deviceGuid))
 
             if(self._raw is True):
                 print("--- get_device()")
                 print("--- raw beginning ---")
                 print(response.text)
                 print("--- raw ending    ---")
-
 
             _json = json.loads(response.text)
             return {
@@ -318,13 +378,12 @@ class Session(object):
 
                 if key == 'airSwingVertical' and isinstance(value, constants.AirSwingUD):
                     airY = value
-                
+
                 if key == 'eco' and isinstance(value, constants.EcoMode):
                     parameters['ecoMode'] = value.value
 
                 if key == 'nanoe' and isinstance(value, constants.NanoeMode) and value != constants.NanoeMode.Unavailable:
                     parameters['nanoe'] = value.value
-
 
         # routine to set the auto mode of fan (either horizontal, vertical, both or disabled)
         if airX is not None or airY is not None:
@@ -363,8 +422,6 @@ class Session(object):
 
         deviceGuid = self._deviceIndexer.get(id)
         if(deviceGuid):
-            response = None
-
             payload = {
                 "deviceGuid": deviceGuid,
                 "parameters": parameters
@@ -376,16 +433,7 @@ class Session(object):
                 print(payload)
                 print("--- raw out ending    ---")
 
-            try:
-                response = requests.post(urls.control(), json=payload, headers=self._headers(), verify=self._verifySsl)
-
-                if 2 != response.status_code // 100:
-                    raise ResponseError(response.status_code, response.text)
-
-            except requests.exceptions.RequestException as ex:
-                raise RequestError(ex)
-
-            _validate_response(response)
+            response = self._request(urls.control(), method='post', payload=payload)
 
             if(self._raw is True):
                 print("--- raw in beginning ---")
@@ -402,14 +450,14 @@ class Session(object):
         value = {}
 
         _convert = {
-                'insideTemperature': 'temperatureInside',
-                'outTemperature': 'temperatureOutside',
-                'temperatureSet': 'temperature',
-                'currencyUnit': 'currencyUnit',
-                'energyConsumption': 'energyConsumption',
-                'estimatedCost': 'estimatedCost',
-                'historyDataList': 'historyDataList',
-            }
+            'insideTemperature': 'temperatureInside',
+            'outTemperature': 'temperatureOutside',
+            'temperatureSet': 'temperature',
+            'currencyUnit': 'currencyUnit',
+            'energyConsumption': 'energyConsumption',
+            'estimatedCost': 'estimatedCost',
+            'historyDataList': 'historyDataList',
+        }
         for key in _convert:
             if key in parameters:
                 value[_convert[key]] = parameters[key]
