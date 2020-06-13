@@ -1,5 +1,13 @@
 from enum import Enum
 
+class Cache(Enum):
+    Off = 'off'
+    Token = 'token'
+    All = 'all'
+
+    def __str__(self):
+        return self.value
+
 class Power(Enum):
     Off = 0
     On = 1

@@ -1,5 +1,6 @@
 import argparse
 import json
+import logging
 import pcomfortcloud
 
 from enum import Enum
@@ -29,6 +30,9 @@ def str2bool(v):
     else:
         raise argparse.ArgumentTypeError('Boolean value expected.')
 
+def namesFromEnum(enumCls):
+	return list(map(lambda i: i.name, enumCls))
+
 def main():
     """ Start pcomfortcloud Comfort Cloud command line """
 
@@ -46,7 +50,7 @@ def main():
     parser.add_argument(
         '-t', '--token',
         help='File to store token in',
-        default='~/.pcomfortcloud-token')
+        default='~/.pcomfortcloud-token.js')
 
     parser.add_argument(
         '-s', '--skipVerify',
@@ -59,6 +63,20 @@ def main():
         help='Raw dump of response',
         type=str2bool, nargs='?', const=True,
         default=False)
+
+    parser.add_argument(
+        '-v', '--verbose', dest='verbosity',
+        help='Increase verbosity of debug output',
+        action='count',
+        default=0)
+
+    parser.add_argument(
+        '-c', '--cache',
+        help="Cached information is retrieved from the token file to speed up operation, (default: %(default)s)",
+        type=pcomfortcloud.constants.Cache,
+        choices=list(pcomfortcloud.constants.Cache),
+        default=pcomfortcloud.constants.Cache.Token
+    )
 
     commandparser = parser.add_subparsers(
         help='commands',
@@ -89,9 +107,7 @@ def main():
 
     set_parser.add_argument(
         '-p', '--power',
-        choices=[
-            pcomfortcloud.constants.Power.On.name,
-            pcomfortcloud.constants.Power.Off.name],
+        choices=namesFromEnum(pcomfortcloud.constants.Power),
         help='Power mode')
 
     set_parser.add_argument(
@@ -101,38 +117,22 @@ def main():
 
     set_parser.add_argument(
         '-f', '--fanSpeed',
-        choices=[
-            pcomfortcloud.constants.FanSpeed.Auto.name,
-            pcomfortcloud.constants.FanSpeed.Low.name,
-            pcomfortcloud.constants.FanSpeed.LowMid.name,
-            pcomfortcloud.constants.FanSpeed.Mid.name,
-            pcomfortcloud.constants.FanSpeed.HighMid.name,
-            pcomfortcloud.constants.FanSpeed.High.name],
+        choices=namesFromEnum(pcomfortcloud.constants.FanSpeed),
         help='Fan speed')
 
     set_parser.add_argument(
         '-m', '--mode',
-        choices=[
-            pcomfortcloud.constants.OperationMode.Auto.name,
-            pcomfortcloud.constants.OperationMode.Cool.name,
-            pcomfortcloud.constants.OperationMode.Dry.name,
-            pcomfortcloud.constants.OperationMode.Heat.name,
-            pcomfortcloud.constants.OperationMode.Fan.name],
+        choices=namesFromEnum(pcomfortcloud.OperationMode)
         help='Operation mode')
 
     set_parser.add_argument(
         '-e', '--eco',
-        choices=[
-            pcomfortcloud.constants.EcoMode.Auto.name,
-            pcomfortcloud.constants.EcoMode.Quiet.name,
-            pcomfortcloud.constants.EcoMode.Powerful.name],
+        choices=namesFromEnum(pcomfortcloud.constants.EcoMode=),
         help='Eco mode')
 
     set_parser.add_argument(
         '-n', '--nanoe',
-        choices=[
-            pcomfortcloud.constants.NanoeMode.On.name,
-            pcomfortcloud.constants.NanoeMode.Off.name],
+        choices=namesFromEnum(pcomfortcloud.constants.NanoeMode),
         help='Nanoe mode')
 
     # set_parser.add_argument(
@@ -146,24 +146,12 @@ def main():
 
     set_parser.add_argument(
         '-y', '--airSwingVertical',
-        choices=[
-            pcomfortcloud.constants.AirSwingUD.Auto.name,
-            pcomfortcloud.constants.AirSwingUD.Down.name,
-            pcomfortcloud.constants.AirSwingUD.DownMid.name,
-            pcomfortcloud.constants.AirSwingUD.Mid.name,
-            pcomfortcloud.constants.AirSwingUD.UpMid.name,
-            pcomfortcloud.constants.AirSwingUD.Up.name],
+        choices=namesFromEnum(pcomfortcloud.constants.AirSwingUD),
         help='Vertical position of the air swing')
 
     set_parser.add_argument(
         '-x', '--airSwingHorizontal',
-        choices=[
-            pcomfortcloud.constants.AirSwingLR.Auto.name,
-            pcomfortcloud.constants.AirSwingLR.Left.name,
-            pcomfortcloud.constants.AirSwingLR.LeftMid.name,
-            pcomfortcloud.constants.AirSwingLR.Mid.name,
-            pcomfortcloud.constants.AirSwingLR.RightMid.name,
-            pcomfortcloud.constants.AirSwingLR.Right.name],
+        choices=namesFromEnum(pcomfortcloud.constants.AirSwingLR),
         help='Horizontal position of the air swing')
 
     dump_parser = commandparser.add_parser(
@@ -196,7 +184,15 @@ def main():
 
     args = parser.parse_args()
 
-    session = pcomfortcloud.Session(args.username, args.password, args.token, args.raw, args.skipVerify == False)
+    if args.verbosity > 1:
+        level = logging.DEBUG
+    elif args.verbosity > 0:
+        level = logging.INFO
+    else:
+        level = logging.WARN
+    logging.basicConfig(level=level, format='--- [%(levelname)s] %(message)s')
+
+    session = pcomfortcloud.Session(args.username, args.password, args.token, args.raw, args.skipVerify == False, caching=args.cache)
     session.login()
     try:
         if args.command == 'list':
