@@ -15,13 +15,17 @@ setup(
     author='Lostfields',
     license='MIT',
     classifiers=[
-       'Topic :: Home Automation',
+        'Topic :: Home Automation',
         'License :: OSI Approved :: MIT License',
         'Programming Language :: Python :: 3.4',
         'Programming Language :: Python :: 3.5',
     ],
     keywords='home automation panasonic climate',
+
+    setup_requires=['pytest-runner', 'flake8', 'pylint'],
+    tests_require=['pytest', 'pytest-pylint'],
     install_requires=['requests>=2.20.0'],
+
     packages=['pcomfortcloud'],
     package_data={'': ['certificatechain.pem']},
     zip_safe=False,
