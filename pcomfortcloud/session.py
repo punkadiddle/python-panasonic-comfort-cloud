@@ -34,8 +34,10 @@ class ResponseError(Error):
                 status_code,
                 text))
         self.status_code = status_code
-        self.text = json.loads(text)
-
+        try:
+          self.text = json.loads(text)
+        except:
+          self.text = text
 
 class Cache():
     ''' Cloud Configuration Cache '''
@@ -179,8 +181,9 @@ class Session(object):
     def _headers(self):
         return {
             "X-APP-TYPE": "1",
-            "X-APP-VERSION": "2.0.0",
+            "X-APP-VERSION": "1.10.0",
             "X-User-Authorization": self._cache.vid,
+            "User-Agent": "G-RAC",
             "Accept": "application/json",
             "Content-Type": "application/json"
         }
@@ -265,7 +268,12 @@ class Session(object):
             self._devices = []
 
             for group in self._cache.groups['groupList']:
-                for device in group['deviceIdList']:
+                if 'deviceList' in group:
+                    deviceList = group.get('deviceList', [])
+                else:
+                    deviceList = group.get('deviceIdList', [])
+
+                for device in deviceList:
                     if device:
                         deviceId = None
                         if 'deviceHashGuid' in device:
